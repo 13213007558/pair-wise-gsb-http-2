@@ -1,3 +1,10 @@
+## Unreleased
+
+### Improvements
+
+* Manual flow control mode: `Connection#manual_flow_control!` disables automatic WINDOW_UPDATE emission for received DATA frames. The `:data` event then yields the payload together with a `FlowControlReceipt`; connection and stream level quota is returned to the peer only when the application confirms consumption via `receipt.consume(n)` (partial confirmations supported) or abandons the rest via `receipt.discard`. DATA padding is charged against the windows but released automatically. On stream reset/close, remaining quota is returned at connection level so a stalled stream cannot block the connection.
+* Send-side flow control accounting now includes DATA padding octets.
+
 ## 1.2.3
 
 ### Improvements

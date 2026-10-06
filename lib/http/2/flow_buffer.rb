@@ -25,18 +25,28 @@ module HTTP2
 
     private
 
+    # Number of bytes a DATA frame charges against the flow control
+    # windows: payload plus any padding octets.
+    #
+    # @param frame [Hash]
+    # @return [Integer]
+    def flow_controlled_size(frame)
+      frame[:payload].bytesize + frame.fetch(:padding, 0)
+    end
+
     def update_local_window(frame)
-      frame_size = frame[:payload].bytesize
-      frame_size += frame.fetch(:padding, 0)
-      @local_window -= frame_size
+      @local_window -= flow_controlled_size(frame)
+    end
+
+    # If DATA frame is received with length > 0 and
+    # current received window size + delta length is strictly larger than
+    # local window size, it throws a flow control error.
+    def verify_local_window
+      error(:flow_control_error) if @local_window < 0
     end
 
     def calculate_window_update(window_max_size)
-      # If DATA frame is received with length > 0 and
-      # current received window size + delta length is strictly larger than
-      # local window size, it throws a flow control error.
-      #
-      error(:flow_control_error) if @local_window < 0
+      verify_local_window
 
       # Send WINDOW_UPDATE if the received window size goes over
       # the local window size / 2.
@@ -69,7 +79,7 @@ module HTTP2
     def send_data(frame = nil, encode = false)
       if frame
         if @send_buffer.empty?
-          frame_size = frame[:payload].bytesize
+          frame_size = frame[:payload].bytesize + frame.fetch(:padding, 0)
           end_stream = frame[:flags].anybits?(END_STREAM)
           # if buffer is empty, and frame is either end 0 length OR
           # is within available window size, skip buffering and send immediately.
@@ -89,7 +99,7 @@ module HTTP2
     end
 
     def send_frame(frame, encode)
-      sent = frame[:payload].bytesize
+      sent = frame[:payload].bytesize + frame.fetch(:padding, 0)
 
       manage_state(frame) do
         if encode
@@ -142,6 +152,7 @@ module HTTP2
       frame = @buffer.first or return
 
       frame_size = frame[:payload].bytesize
+      total_size = frame_size + frame.fetch(:padding, 0)
       end_stream = frame[:flags].anybits?(END_STREAM)
 
       # Frames with zero length with the END_STREAM flag set (that
@@ -149,20 +160,23 @@ module HTTP2
       # in either flow control window.
       return if window_size <= 0 && !(frame_size.zero? && end_stream)
 
-      if frame_size > window_size
-        chunk = frame.dup
-
+      if total_size > window_size
         # Split frame so that it fits in the window
-        # TODO: consider padding!
+        split = [window_size, frame_size].min
+        return if split.zero?
 
-        chunk[:payload] = read_str(frame[:payload], window_size) # mutates frame[:payload]
-        chunk[:length]  = window_size
-        frame[:length] = frame_size - window_size
+        chunk = frame.dup
+        # Padding (if any) belongs to the tail of the DATA frame sequence:
+        # it stays with the buffered remainder, not the emitted chunk.
+        chunk.delete(:padding)
+        chunk[:payload] = read_str(frame[:payload], split) # mutates frame[:payload]
+        chunk[:length]  = split
+        frame[:length] = frame_size - split
 
         # if no longer last frame in sequence...
         chunk[:flags] ^= END_STREAM if end_stream
 
-        @bytesize -= window_size
+        @bytesize -= split
         chunk
       else
         @bytesize -= frame_size

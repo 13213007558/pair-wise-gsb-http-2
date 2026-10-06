@@ -46,12 +46,17 @@ module HTTP2
     @h2c_upgrade: Symbol?
     @closed_since: Float?
     @received_frame: bool
+    @manual_flow_control: bool
 
     def closed?: () -> bool
 
     def closing?: () -> bool
 
     def close!: () -> void
+
+    def manual_flow_control!: () -> void
+
+    def manual_flow_control?: () -> bool
 
     def new_stream: (**untyped) -> Stream
 

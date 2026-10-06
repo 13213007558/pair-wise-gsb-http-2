@@ -228,6 +228,29 @@ stream.window              # check current window size
 stream.window_update(2048) # increment stream window by 2048 bytes
 ```
 
+#### Manual flow control
+
+By default, receiving a DATA frame automatically returns flow control quota to the peer (WINDOW_UPDATE frames are emitted by the library). If the application needs to apply backpressure based on how fast it actually consumes the data, enable manual flow control:
+
+```ruby
+conn.manual_flow_control!
+
+conn.on(:stream) do |stream|
+  stream.on(:data) do |payload, receipt|
+    buffer << payload
+    receipt.consume(payload.bytesize) # return quota once consumed
+  end
+end
+```
+
+In this mode the `:data` event yields the payload together with a receipt. Both the connection and the stream window are only credited once the receipt is confirmed:
+
+* `receipt.consume(n)` confirms `n` payload bytes (partial confirmations are allowed; duplicate or out-of-range confirmations raise `ArgumentError`).
+* `receipt.discard` abandons all remaining bytes and returns their quota immediately.
+* DATA padding counts against the flow control windows, but padding bytes are not confirmable by the application - they are released automatically once the payload is fully accounted for.
+* If the stream is reset or closed, any unconfirmed quota is returned at connection level only (the peer can no longer use stream-level quota on a closed stream), so a stalled stream cannot block the connection.
+* If the peer ended the stream (END_STREAM), subsequent confirmations return connection-level quota only.
+
 
 ### Server push
 

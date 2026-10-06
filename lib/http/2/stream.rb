@@ -99,9 +99,11 @@ module HTTP2
       @_waiting_on_trailers = false
       @received_data = false
       @activated = false
+      @pending_receipts = []
 
       on(:window) { |v| @remote_window = v }
       on(:local_window) { |v| @local_window_max_size = @local_window = v }
+      on(:close) { release_pending_receipts }
     end
 
     def closed?
@@ -127,9 +129,16 @@ module HTTP2
         @received_data = true
         calculate_content_length(frame[:length])
         update_local_window(frame)
-        # Emit DATA frame
-        emit(:data, frame[:payload]) unless frame[:ignore]
-        calculate_window_update(@local_window_max_size)
+        if @connection.manual_flow_control?
+          verify_local_window
+          # Emit DATA frame along with a consumption receipt; quota is
+          # returned to the peer only once the application confirms it.
+          emit_data_with_receipt(frame) unless frame[:ignore]
+        else
+          # Emit DATA frame
+          emit(:data, frame[:payload]) unless frame[:ignore]
+          calculate_window_update(@local_window_max_size)
+        end
       when :headers
         # @type var frame: headers_frame
         stream_error(:stream_closed) if (@state == :closed && @closed != :local_rst) ||
@@ -311,6 +320,31 @@ module HTTP2
     end
 
     private
+
+    # Emits the DATA payload along with a receipt the application uses to
+    # confirm consumption (manual flow control mode only).
+    def emit_data_with_receipt(frame)
+      receipt = FlowControlReceipt.new(
+        connection: @connection,
+        stream: self,
+        size: frame[:payload].bytesize,
+        padding: frame.fetch(:padding, 0)
+      )
+      unless receipt.complete?
+        @pending_receipts.reject!(&:complete?)
+        @pending_receipts << receipt
+      end
+      emit(:data, frame[:payload], receipt)
+    end
+
+    # When the stream closes, any quota still held by outstanding receipts
+    # is returned at connection level only: the peer can no longer use
+    # stream-level quota on a closed stream, but the connection window is
+    # shared with other streams and must not stay depleted.
+    def release_pending_receipts
+      @pending_receipts.each(&:release_connection_quota)
+      @pending_receipts.clear
+    end
 
     # HTTP 2.0 Stream States
     # - http://tools.ietf.org/html/draft-ietf-httpbis-http2-16#section-5.1

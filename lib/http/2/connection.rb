@@ -88,10 +88,28 @@ module HTTP2
       @h2c_upgrade = nil
       @closed_since = nil
       @received_frame = false
+      @manual_flow_control = false
 
       # from mixins
       @listeners = Hash.new { |hash, key| hash[key] = [] }
       @send_buffer = FrameBuffer.new
+    end
+
+    # Enables manual flow control mode for received DATA frames.
+    #
+    # In this mode, no automatic WINDOW_UPDATE frames are sent: the :data
+    # event yields the payload together with a FlowControlReceipt, and the
+    # corresponding connection and stream level quota is only returned to
+    # the peer once the application confirms consumption of the data (see
+    # FlowControlReceipt#consume and FlowControlReceipt#discard).
+    def manual_flow_control!
+      @manual_flow_control = true
+    end
+
+    # Whether manual flow control mode is enabled (default: false, i.e.
+    # windows are updated automatically as DATA frames are received).
+    def manual_flow_control?
+      @manual_flow_control
     end
 
     # No new streams may be opened (a GOAWAY was sent or received).
@@ -365,7 +383,16 @@ module HTTP2
               stream << frame
               if frame_type == :data
                 update_local_window(frame)
-                calculate_window_update(@local_window_limit)
+                if manual_flow_control?
+                  verify_local_window
+                  # DATA ignored by the stream (e.g. received after a local
+                  # RST_STREAM) is never surfaced to the application, so its
+                  # connection-level quota is returned immediately.
+                  size = flow_controlled_size(frame)
+                  window_update(size) if frame[:ignore] && size.positive?
+                else
+                  calculate_window_update(@local_window_limit)
+                end
               end
             else
               case frame_type

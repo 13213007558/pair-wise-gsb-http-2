@@ -1,0 +1,38 @@
+module HTTP2
+  # Manual flow control consumption receipt: represents the flow controlled
+  # bytes of a received DATA frame. Quota is returned to the peer only once
+  # the application confirms consumption of the data.
+  class FlowControlReceipt
+    # Number of payload bytes the application may confirm.
+    attr_reader size: Integer
+
+    # Number of protocol-only padding bytes (not confirmable).
+    attr_reader padding: Integer
+
+    # Number of payload bytes not yet confirmed or discarded.
+    attr_reader remaining: Integer
+
+    @connection: Connection
+    @stream: Stream
+    @padding_released: bool
+    @connection_released: bool
+
+    def initialize: (connection: Connection, stream: Stream, size: Integer, padding: Integer) -> void
+
+    def complete?: () -> bool
+
+    def consume: (Integer amount) -> self
+
+    def discard: () -> self
+
+    def release_connection_quota: () -> void
+
+    private
+
+    def unreleased_padding: () -> Integer
+
+    def release: (Integer amount) -> void
+
+    def release_padding: () -> void
+  end
+end

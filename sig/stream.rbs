@@ -24,6 +24,7 @@ module HTTP2
     @_trailers: Array[String]?
     @received_data: bool
     @activated: bool
+    @pending_receipts: Array[FlowControlReceipt]
 
     alias window local_window
 
@@ -89,5 +90,9 @@ module HTTP2
     alias error stream_error
 
     def manage_state: (stream_frame_props frame) { () -> void } -> void
+
+    def emit_data_with_receipt: (data_frame frame) -> void
+
+    def release_pending_receipts: () -> void
   end
 end
