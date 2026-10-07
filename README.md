@@ -193,6 +193,35 @@ Events emitted by the [Stream object](lib/http/2/stream.rb):
 </table>
 
 
+### Header compression
+
+`HTTP2::Header::Compressor` accepts a third, per-field HPACK representation:
+`:index` uses normal compression, `:noindex` emits a literal without indexing
+it, and `:neverindexed` emits the sensitive never-indexed representation. A
+callback has the same effect and is consulted once per input field:
+
+```ruby
+compressor = HTTP2::Header::Compressor.new
+headers = [
+  ["cache-control", "no-cache"],
+  ["authorization", "Bearer token", :neverindexed]
+]
+
+wire = compressor.encode(headers) do |name, value|
+  name == "authorization" ? :neverindexed : :index
+end
+
+decompressor = HTTP2::Header::Decompressor.new
+decompressor.decode(wire) do |name, value, representation|
+  # representation is :indexed, :incremental, :noindex, or :neverindexed
+end
+```
+
+A never-indexed field is not inserted into the dynamic table. Changing a field
+to never-indexed on a later header block does not remove an entry inserted by
+an earlier block; it remains until ordinary HPACK eviction or a dynamic table
+size update removes it.
+
 ### Prioritization
 
 Each HTTP/2 [stream has a priority value](https://hpbn.co/http2/#stream-prioritization) that can be sent when the new stream is initialized, and optionally reprioritized later:

@@ -109,10 +109,13 @@ module HTTP2
       end
 
       # Encodes provided list of HTTP headers.
-      def encode(headers)
+      def encode(headers, index: nil, index_policy: nil, indexing_policy: nil, &block)
         buffer = "".b
         headers.partition { |f, _| f.start_with? ":" }.each do |hs|
-          @cc.encode(hs) do |cmd|
+          policy = block || index_policy || indexing_policy
+          policy = index if policy.nil? && index.respond_to?(:call)
+          field_index = index.respond_to?(:call) ? nil : index
+          @cc.encode(hs, index: field_index, index_policy: policy) do |cmd|
             header(cmd, buffer)
           end
         end

@@ -39,6 +39,13 @@ module HTTP2
 
   type header_pair = [string, string]
 
+  type header_indexing = :all | :static | :never |
+                         :index | :indexed | :incremental | :normal |
+                         :noindex | :no_index | :literal |
+                         :neverindexed | :never_indexed
+
+  type header_field = [string, string] | [string, string, header_indexing]
+
   # # FRAMES
   type frame_control_flags = Integer
 
@@ -48,7 +55,7 @@ module HTTP2
 
   # # HEADERS
   type headers_frame_props = {
-    type: :headers, payload: Enumerable[header_pair] | String,
+    type: :headers, payload: Enumerable[header_field] | String,
     ?method: Symbol, ?trailer: Array[String], ?content_length: Integer, ?padding: Integer
   }
   type headers_frame = common_frame & headers_frame_props
@@ -63,7 +70,15 @@ module HTTP2
   type data_frame = common_frame & data_frame_props
 
   # # PUSH_PROMISE
-  type push_promise_frame_props = { promise_stream: Integer, ?length: Integer, ?method: Symbol, ?trailer: Array[String], ?content_length: Integer, payload: Enumerable[header_pair] | String, ?padding: Integer }
+  type push_promise_frame_props = {
+    promise_stream: Integer,
+    ?length: Integer,
+    ?method: Symbol,
+    ?trailer: Array[String],
+    ?content_length: Integer,
+    payload: Enumerable[header_field] | String,
+    ?padding: Integer
+  }
 
   type push_promise_frame = common_frame & push_promise_frame_props
 
@@ -145,7 +160,7 @@ module HTTP2
                      bool |
                      Array[String] |
                      Array[[Symbol | Integer, Integer]] |
-                     Enumerable[header_pair] |
+                     Enumerable[header_field] |
                      nil
 
   type frame = Hash[frame_key, frame_value]

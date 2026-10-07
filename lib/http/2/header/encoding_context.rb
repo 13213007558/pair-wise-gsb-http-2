@@ -90,6 +90,21 @@ module HTTP2
 
       STATIC_NEVER = %i[never static].freeze
 
+      FIELD_INDEXING_TYPES = {
+        all: :all,
+        static: :static,
+        never: :never,
+        index: :index,
+        indexed: :index,
+        incremental: :index,
+        normal: :index,
+        noindex: :noindex,
+        no_index: :noindex,
+        literal: :noindex,
+        neverindexed: :neverindexed,
+        never_indexed: :neverindexed
+      }.freeze
+
       # Current table of header key-value pairs.
       attr_reader :table
 
@@ -210,17 +225,31 @@ module HTTP2
       end
 
       # Plan +headers+ compression.
-      def encode(headers)
-        # Literals commands are marked with :noindex when index is not used
-        noindex = STATIC_NEVER.include?(@settings.index)
-
-        headers.each do |field, value|
+      #
+      # A field may carry +:index+, +:noindex+, or +:neverindexed+ as its
+      # third entry. +index_policy+ is consulted exactly once while planning
+      # each input field, so retrying the emitted buffer cannot select a
+      # different representation. Never-indexed fields remain literal; their
+      # names may still reference an existing static or dynamic entry.
+      #
+      # Choosing a non-indexing representation for a field does not remove an
+      # entry that an earlier header block inserted. Existing entries remain
+      # until normal HPACK eviction or a table-size/resizing update removes
+      # them.
+      def encode(headers, index: nil, index_policy: nil, indexing_policy: nil)
+        headers.each do |field, value, field_indexing|
           # Literal header names MUST be translated to lowercase before
           # encoding and transmission.
           field = field.downcase if UPPER.match?(field)
           value = "/" if field == ":path" && value.empty?
-          cmd = addcmd(field, value)
-          cmd[:type] = :noindex if noindex && cmd[:type] == :incremental
+
+          policy = index_policy || indexing_policy
+          indexing = field_indexing
+          indexing = policy.call(field, value) if policy
+          indexing ||= index
+          indexing = normalize_field_indexing(indexing)
+
+          cmd = addcmd(field, value, indexing || @settings.index)
           process(cmd)
           yield cmd
         end
@@ -230,32 +259,36 @@ module HTTP2
       # Prefer static table over dynamic table.
       # Prefer exact match over name-only match.
       #
-      def addcmd(field, value)
+      def addcmd(field, value, index_type = @settings.index)
         # @type var exact: Integer?
         exact = nil
         # @type var name_only: Integer?
         name_only = nil
+        literal_only = %i[noindex neverindexed].include?(index_type)
+        allow_static = STATIC_ALL.include?(index_type) ||
+                        index_type == :never ||
+                        literal_only
+        allow_dynamic_exact = index_type == :all
+        allow_dynamic_name = index_type == :all || literal_only
 
-        index_type = @settings.index
-
-        if STATIC_ALL.include?(index_type) &&
+        if allow_static &&
            STATIC_TABLE_BY_FIELD.key?(field)
           STATIC_TABLE_BY_FIELD[field].each do |i, svalue|
             name_only ||= i
-            if value == svalue
+            if !literal_only && value == svalue
               exact = i
               break
             end
           end
         end
 
-        if index_type == :all && !exact
+        if (allow_dynamic_exact || allow_dynamic_name) && (!exact || literal_only)
           field_entries = @table_by_field[field]
 
           field_entries&.each do |hvalue, unshift_id|
             abs_index = (@unshifts - unshift_id) + STATIC_TABLE_SIZE
             name_only ||= abs_index
-            if value == hvalue
+            if allow_dynamic_exact && value == hvalue
               exact = abs_index
               break
             end
@@ -265,7 +298,12 @@ module HTTP2
         if exact
           { name: exact, type: :indexed }
         else
-          { name: name_only || field, value: value, type: :incremental }
+          type = case index_type
+                 when :neverindexed then :neverindexed
+                 when :noindex, :never, :static then :noindex
+                 else :incremental
+                 end
+          { name: name_only || field, value: value, type: type }
         end
       end
 
@@ -283,6 +321,16 @@ module HTTP2
       end
 
       private
+
+      def normalize_field_indexing(indexing)
+        return nil if indexing.nil?
+
+        normalized = FIELD_INDEXING_TYPES.fetch(indexing) do
+          raise ArgumentError, "unsupported indexing policy: #{indexing.inspect}"
+        end
+
+        normalized
+      end
 
       def resize_table(cmdsize)
         return if @table.empty?

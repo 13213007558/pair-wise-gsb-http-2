@@ -141,6 +141,204 @@ RSpec.describe HTTP2::Header do
     end
   end
 
+  context "per-field indexing policy" do
+    it "encodes a never-indexed field even when an identical dynamic entry exists" do
+      first = c.encode([["authorization", "secret-token"]])
+      expect(d.decode(first)).to eq [["authorization", "secret-token"]]
+      expect(d.instance_eval { @cc.table }).to eq [["authorization", "secret-token"]]
+
+      second = c.encode([["authorization", "secret-token", :neverindexed]])
+      command = d.header(second.dup)
+      expect(command.fetch(:type)).to eq :neverindexed
+      expect(command.fetch(:name)).to eq 22
+    end
+
+    it "may reference an existing dynamic name while keeping the value literal" do
+      d.decode(c.encode([["x-sensitive-name", "first"]]))
+
+      wire = c.encode([["x-sensitive-name", "second", :neverindexed]])
+      command = d.header(wire.dup)
+
+      expect(command).to eq(
+        type: :neverindexed,
+        name: EncodingContext::STATIC_TABLE_SIZE,
+        value: "second"
+      )
+      expect(d.instance_eval { @cc.table }).to eq [["x-sensitive-name", "first"]]
+    end
+
+    it "uses a callback once for every field and supports all three policies" do
+      calls = []
+      policy = lambda do |name, value|
+        calls << [name, value]
+        case name
+        when "never-field" then :neverindexed
+        when "literal-field" then :noindex
+        else :index
+        end
+      end
+
+      wire = c.encode([
+        ["custom-dynamic", "one"],
+        ["literal-field", "two"],
+        ["never-field", "three"]
+      ], &policy)
+
+      expect(calls).to eq [
+        ["custom-dynamic", "one"],
+        ["literal-field", "two"],
+        ["never-field", "three"]
+      ]
+
+      commands = []
+      buffer = wire.dup
+      commands << d.header(buffer) until buffer.empty?
+      expect(commands.map { |command| command[:type] }).to eq %i[
+        incremental noindex neverindexed
+      ]
+    end
+
+    it "accepts an explicit policy callable without using a block" do
+      wire = c.encode(
+        [["authorization", "secret"]],
+        index_policy: ->(*) { :never_indexed }
+      )
+
+      expect(d.header(wire.dup).fetch(:type)).to eq :neverindexed
+    end
+
+    it "keeps legacy :never distinct from the never-indexed marker" do
+      wire = c.encode([["authorization", "secret"]], index: :never)
+      command = d.header(wire.dup)
+
+      expect(command.fetch(:type)).to eq :noindex
+      expect(command.fetch(:name)).to eq 22
+    end
+
+    it "rejects an unknown per-field policy" do
+      expect { c.encode([["authorization", "secret", :secret]]) }
+        .to raise_error(ArgumentError, /unsupported indexing policy: :secret/)
+    end
+
+    it "does not invoke the callback again while planning one encode call" do
+      count = 0
+      policy = lambda do |name, _value|
+        count += 1
+        name == "authorization" ? :neverindexed : :index
+      end
+
+      headers = [
+        ["custom-dynamic", "one"],
+        ["authorization", "secret"]
+      ]
+      c.encode(headers, &policy)
+
+      expect(count).to eq 2
+    end
+
+    it "keeps duplicate and empty never-indexed values out of the dynamic table" do
+      wire = c.encode([
+        ["set-cookie", "a=b", :neverindexed],
+        ["set-cookie", "", :neverindexed]
+      ])
+
+      events = []
+      decoded = d.decode(wire) do |name, value, indexing|
+        events << [name, value, indexing]
+      end
+
+      expect(decoded).to eq [["set-cookie", "a=b"], ["set-cookie", ""]]
+      expect(events).to eq [
+        ["set-cookie", "a=b", :neverindexed],
+        ["set-cookie", "", :neverindexed]
+      ]
+      expect(c.instance_eval { @cc.table }).to be_empty
+      expect(d.instance_eval { @cc.table }).to be_empty
+    end
+
+    it "keeps repeated never-indexed fields literal across header blocks" do
+      headers = [["authorization", "secret", :neverindexed]]
+
+      first = c.encode(headers)
+      second = c.encode(headers)
+
+      expect(d.header(first.dup).fetch(:type)).to eq :neverindexed
+      expect(d.header(second.dup).fetch(:type)).to eq :neverindexed
+      d.decode(first)
+      d.decode(second)
+      expect(c.instance_eval { @cc.table }).to be_empty
+      expect(d.instance_eval { @cc.table }).to be_empty
+    end
+
+    it "preserves never-indexed events across a table size update in the block" do
+      d.decode(c.encode([["old-field", "old-value"]]))
+      wire = +"".b
+      c.header({ type: :changetablesize, name: 256, value: 256 }, wire)
+      c.header({ type: :neverindexed, name: "set-cookie", value: "a=b" }, wire)
+      c.header({ type: :neverindexed, name: "set-cookie", value: "" }, wire)
+
+      events = []
+      d.decode(wire) { |*event| events << event }
+
+      expect(events).to eq [
+        ["set-cookie", "a=b", :neverindexed],
+        ["set-cookie", "", :neverindexed]
+      ]
+      expect(d.instance_eval { @cc.table }).to eq [["old-field", "old-value"]]
+    end
+
+    it "can return representation metadata in the decoded list" do
+      wire = c.encode([
+        ["custom-field", "indexed", :index],
+        ["authorization", "secret", :neverindexed]
+      ])
+
+      decoded = d.decode(wire, nil, representation: true)
+      expect(decoded).to eq [
+        ["custom-field", "indexed", :incremental],
+        ["authorization", "secret", :neverindexed]
+      ]
+    end
+
+    it "keeps sender and receiver tables synchronized across multiple blocks" do
+      first_headers = [
+        ["ordinary", "one"],
+        ["secret", "sensitive", :neverindexed]
+      ]
+      second_headers = [
+        ["ordinary", "one"],
+        ["secret", "sensitive", :neverindexed]
+      ]
+      third_headers = [["ordinary", "one", :neverindexed]]
+
+      d.decode(c.encode(first_headers))
+      d.decode(c.encode(second_headers))
+      ordinary_table = [["ordinary", "one"]]
+      expect(c.instance_eval { @cc.table }).to eq ordinary_table
+      expect(d.instance_eval { @cc.table }).to eq ordinary_table
+
+      third = c.encode(third_headers)
+      expect(d.header(third.dup).fetch(:type)).to eq :neverindexed
+      d.decode(third)
+
+      expect(c.instance_eval { @cc.table }).to eq ordinary_table
+      expect(d.instance_eval { @cc.table }).to eq ordinary_table
+    end
+
+    it "leaves a previously indexed entry alone when the field later becomes sensitive" do
+      d.decode(c.encode([["ordinary", "one"]]))
+      d.decode(c.encode([["ordinary", "one", :neverindexed]]))
+
+      expect(c.instance_eval { @cc.table }).to eq [["ordinary", "one"]]
+      expect(d.instance_eval { @cc.table }).to eq [["ordinary", "one"]]
+
+      c.table_size = 0
+      d.table_size = 0
+      expect(c.instance_eval { @cc.table }).to be_empty
+      expect(d.instance_eval { @cc.table }).to be_empty
+    end
+  end
+
   context "shared compression context" do
     let(:cc) { EncodingContext.new }
 

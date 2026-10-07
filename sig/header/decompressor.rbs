@@ -15,7 +15,12 @@ module HTTP2
 
       def header: (String) -> header_command
 
-      def decode: (String, frame?) -> Array[header_pair]
+      def decode: (String,
+                   frame?,
+                   ?index: Symbol?,
+                   ?representation: bool) { (String, String, header_type) -> void }
+                   -> Array[header_pair | [string, string, header_type]]
+                | (String, frame?) -> Array[header_pair]
                 | (String) -> Array[header_pair]
       private
 

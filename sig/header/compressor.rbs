@@ -14,7 +14,11 @@ module HTTP2
 
       def header: (header_command, ?String) -> String
 
-      def encode: (Enumerable[header_pair]) -> String
+      def encode: (Enumerable[header_field],
+                   ?index: header_indexing |
+                            header_index_policy),
+                   ?index_policy: header_index_policy?,
+                   ?indexing_policy: header_index_policy?) -> String
 
       private
 

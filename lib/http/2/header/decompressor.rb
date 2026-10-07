@@ -95,12 +95,16 @@ module HTTP2
       end
 
       # Decodes and processes header commands within provided +buf+.
-      def decode(buf, frame = nil)
-        list = [] #: Array[header_pair]
+      # A block receives each field with its HPACK representation. Pass
+      # <tt>representation: true</tt> to also return that representation.
+      def decode(buf, frame = nil, index: nil, representation: false, &block)
+        include_representation = representation || index == :representation
+        list = []
         decoding_pseudo_headers = true
         @cc.listen_on_table do
           until buf.empty?
-            field, value = @cc.process(header(buf))
+            command = header(buf)
+            field, value = @cc.process(command)
             next if field.nil?
 
             is_pseudo_header = field.start_with?(":")
@@ -123,7 +127,13 @@ module HTTP2
                 (frame[:trailer] ||= []) << value
               end
             end
-            list << [field, value]
+            representation_type = command[:type]
+            block&.call(field, value, representation_type)
+            list << if include_representation
+                      [field, value, representation_type]
+                    else
+                      [field, value]
+                    end
           end
         end
         list

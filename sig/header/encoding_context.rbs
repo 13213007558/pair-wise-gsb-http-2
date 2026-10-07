@@ -11,6 +11,8 @@ module HTTP2
 
       STATIC_NEVER: Array[Symbol]
 
+      FIELD_INDEXING_TYPES: Hash[Symbol, Symbol]
+
       UPPER: Regexp
 
 
@@ -34,9 +36,14 @@ module HTTP2
 
       def process: (header_command cmd) -> header_pair?
 
-      def encode: (_Each[header_pair]) { (header_command) -> void } -> void
+      def encode: (_Each[header_field],
+                    ?index: header_indexing?,
+                    ?index_policy: header_index_policy?,
+                    ?indexing_policy: header_index_policy?) { (header_command) -> void } -> void
 
-      def addcmd: (String name, String value) -> header_command
+      def addcmd: (String name,
+                   String value,
+                   ?header_indexing) -> header_command
 
       def table_size=: (Integer) -> void
 
