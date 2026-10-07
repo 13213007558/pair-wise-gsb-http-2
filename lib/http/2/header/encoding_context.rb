@@ -90,6 +90,20 @@ module HTTP2
 
       STATIC_NEVER = %i[never static].freeze
 
+      INDEXING_POLICIES = {
+        incremental: :incremental,
+        indexed: :incremental,
+        no_index: :noindex,
+        noindex: :noindex,
+        never: :neverindexed,
+        neverindexed: :neverindexed,
+        never_indexed: :neverindexed,
+        "no-index" => :noindex,
+        "neverindexed" => :neverindexed,
+        "never_indexed" => :neverindexed,
+        "never-indexed" => :neverindexed
+      }.freeze
+
       # Current table of header key-value pairs.
       attr_reader :table
 
@@ -209,18 +223,23 @@ module HTTP2
         end
       end
 
-      # Plan +headers+ compression.
-      def encode(headers)
+      # Plan +headers+ compression. The optional indexing policy is called
+      # once per input field so retries cannot obtain a different policy.
+      def encode(headers, indexing_policy: nil)
         # Literals commands are marked with :noindex when index is not used
         noindex = STATIC_NEVER.include?(@settings.index)
 
         headers.each do |field, value|
+          policy = indexing_policy
+          policy = call_indexing_policy(policy, field, value)
+          representation = resolve_representation(policy, noindex)
+
           # Literal header names MUST be translated to lowercase before
           # encoding and transmission.
           field = field.downcase if UPPER.match?(field)
           value = "/" if field == ":path" && value.empty?
-          cmd = addcmd(field, value)
-          cmd[:type] = :noindex if noindex && cmd[:type] == :incremental
+          exact_match = representation == :incremental || policy.nil?
+          cmd = addcmd(field, value, representation, exact_match)
           process(cmd)
           yield cmd
         end
@@ -230,7 +249,7 @@ module HTTP2
       # Prefer static table over dynamic table.
       # Prefer exact match over name-only match.
       #
-      def addcmd(field, value)
+      def addcmd(field, value, representation = :incremental, exact_match = representation == :incremental)
         # @type var exact: Integer?
         exact = nil
         # @type var name_only: Integer?
@@ -242,20 +261,20 @@ module HTTP2
            STATIC_TABLE_BY_FIELD.key?(field)
           STATIC_TABLE_BY_FIELD[field].each do |i, svalue|
             name_only ||= i
-            if value == svalue
+            if exact_match && value == svalue
               exact = i
               break
             end
           end
         end
 
-        if index_type == :all && !exact
+        if index_type == :all
           field_entries = @table_by_field[field]
 
           field_entries&.each do |hvalue, unshift_id|
             abs_index = (@unshifts - unshift_id) + STATIC_TABLE_SIZE
             name_only ||= abs_index
-            if value == hvalue
+            if exact_match && value == hvalue
               exact = abs_index
               break
             end
@@ -265,7 +284,7 @@ module HTTP2
         if exact
           { name: exact, type: :indexed }
         else
-          { name: name_only || field, value: value, type: :incremental }
+          { name: name_only || field, value: value, type: representation }
         end
       end
 
@@ -283,6 +302,33 @@ module HTTP2
       end
 
       private
+
+      def call_indexing_policy(policy, field, value)
+        return policy unless policy.respond_to?(:call)
+
+        if policy.method(:call).arity == 1
+          policy.call([field, value])
+        else
+          policy.call(field, value)
+        end
+      end
+
+      def resolve_representation(policy, global_noindex)
+        representation =
+          if policy.nil?
+            global_noindex ? :noindex : :incremental
+          else
+            INDEXING_POLICIES.fetch(policy) do
+              raise ArgumentError, "invalid indexing policy: #{policy.inspect}"
+            end
+          end
+
+        if representation == :incremental && global_noindex
+          :noindex
+        else
+          representation
+        end
+      end
 
       def resize_table(cmdsize)
         return if @table.empty?

@@ -37,7 +37,7 @@ module HTTP2
   PADDED: Integer
   PRIORITY: Integer
 
-  type header_pair = [string, string]
+  type header_pair = [string, string] | Header::HeaderField
 
   # # FRAMES
   type frame_control_flags = Integer

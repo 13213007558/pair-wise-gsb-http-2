@@ -34,9 +34,12 @@ module HTTP2
 
       def process: (header_command cmd) -> header_pair?
 
-      def encode: (_Each[header_pair]) { (header_command) -> void } -> void
+      def encode: (
+        _Each[header_pair],
+        ?indexing_policy: indexing_policy | indexing_policy_callable
+      ) { (header_command) -> void } -> void
 
-      def addcmd: (String name, String value) -> header_command
+      def addcmd: (String name, String value, ?header_type representation, ?bool exact_match) -> header_command
 
       def table_size=: (Integer) -> void
 
@@ -46,7 +49,13 @@ module HTTP2
 
       def initialize: (?Settings settings) -> void
 
-      def add_to_table: (string name, string value) -> void
+      def call_indexing_policy: (
+        indexing_policy | indexing_policy_callable | nil policy,
+        String field,
+        String value
+      ) -> indexing_policy | nil
+
+      def resolve_representation: (indexing_policy | nil policy, bool global_noindex) -> header_type
 
       def resize_table: (Integer cmdsize) -> void
 

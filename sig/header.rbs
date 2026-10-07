@@ -3,6 +3,12 @@ module HTTP2
     type header_key = :type | :name | :value | :index
     type header_value = Integer | String | :indexed | :changetablesize | :incremental | :noindex | :neverindexed
 
+    type indexing_policy = :indexed | :incremental | :noindex | :no_index |
+                           :neverindexed | :never_indexed | :never |
+                           "no-index" | "neverindexed" | "never_indexed" | "never-indexed"
+
+    type indexing_policy_callable = ^(*untyped) -> (indexing_policy | nil)
+
     type context_hash = {
      huffman: (:always | :never | :shorter),
      index: (:all | :static | :never),
@@ -16,6 +22,16 @@ module HTTP2
                           { type: :changetablesize, ?name: Integer, value: Integer }
 
     HEADREP: Hash[header_type, { prefix: Integer, pattern: Integer }]
+
+    class HeaderField < Array[String]
+      attr_reader never_indexed: bool
+
+      def self.[]: (String, String, ?bool) -> HeaderField
+
+      def initialize: (String, String, ?bool) -> void
+
+      def never_indexed?: () -> bool
+    end
 
     NAIVE: Hash[Symbol, Symbol]
     LINEAR: Hash[Symbol, Symbol]

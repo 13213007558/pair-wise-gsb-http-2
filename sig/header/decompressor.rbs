@@ -15,8 +15,8 @@ module HTTP2
 
       def header: (String) -> header_command
 
-      def decode: (String, frame?) -> Array[header_pair]
-                | (String) -> Array[header_pair]
+      def decode: (String, frame?) -> Array[HeaderField]
+                | (String) -> Array[HeaderField]
       private
 
       def initialize: (?Settings settings) -> void

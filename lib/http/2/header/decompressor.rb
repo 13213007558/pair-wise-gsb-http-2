@@ -100,7 +100,8 @@ module HTTP2
         decoding_pseudo_headers = true
         @cc.listen_on_table do
           until buf.empty?
-            field, value = @cc.process(header(buf))
+            command = header(buf)
+            field, value = @cc.process(command)
             next if field.nil?
 
             is_pseudo_header = field.start_with?(":")
@@ -123,7 +124,7 @@ module HTTP2
                 (frame[:trailer] ||= []) << value
               end
             end
-            list << [field, value]
+            list << HeaderField.new(field, value, command[:type] == :neverindexed)
           end
         end
         list

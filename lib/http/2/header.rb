@@ -6,6 +6,25 @@ module HTTP2
   #
   # - http://tools.ietf.org/html/draft-ietf-httpbis-header-compression-10
   module Header
+    # A decoded header field. It behaves as the conventional [name, value]
+    # pair while retaining whether it used the never-indexed representation.
+    class HeaderField < Array
+      attr_reader :never_indexed
+
+      def self.[](name, value, never_indexed = false)
+        new(name, value, never_indexed)
+      end
+
+      def initialize(name, value, never_indexed = false)
+        super(2)
+        self[0] = name
+        self[1] = value
+        @never_indexed = never_indexed
+      end
+
+      alias never_indexed? never_indexed
+    end
+
     # Header representation as defined by the spec.
     HEADREP = {
       indexed: { prefix: 7, pattern: 0x80 },

@@ -256,6 +256,153 @@ RSpec.describe HTTP2::Header do
         EncodingContext.new.encode([[":path", "/"]]) { |cmd| yes_path = cmd }
         expect(no_path).to eq(yes_path)
       end
+
+      it "uses a per-field never-indexed representation even when the pair is already indexed" do
+        policy = proc { |field, _| field == "authorization" ? :neverindexed : :indexed }
+
+        first = c.encode([%w[content-type application/json]], &policy)
+        expect(d.decode(first.dup)).to eq [["content-type", "application/json"]]
+        expect(c.instance_variable_get(:@cc).table).to eq [["content-type", "application/json"]]
+        expect(d.instance_variable_get(:@cc).table).to eq [["content-type", "application/json"]]
+
+        second_headers = [
+          %w[content-type application/json],
+          %w[authorization secret]
+        ]
+        second = c.encode(second_headers, &policy)
+        decoded = d.decode(second.dup)
+
+        expect((second.getbyte(0) & 0xc0)).to eq 0x80
+        expect((second.getbyte(1) & 0xf0)).to eq 0x10
+        expect(second.bytes[1..2]).to eq [31, 8]
+        expect(decoded).to eq second_headers
+        expect(decoded[0]).not_to be_never_indexed
+        expect(decoded[1]).to be_never_indexed
+
+        expected_table = [["content-type", "application/json"]]
+        expect(c.instance_variable_get(:@cc).table).to eq expected_table
+        expect(d.instance_variable_get(:@cc).table).to eq expected_table
+
+        third = c.encode([%w[authorization secret]], &policy)
+        expect((third.getbyte(0) & 0xf0)).to eq 0x10
+        expect(third.bytes[0..1]).to eq [31, 8]
+        expect(d.decode(third).first).to be_never_indexed
+      end
+
+      it "supports no-indexed fields and literal names without indexing them" do
+        policy = proc { |field, _| field == "x-sensitive" ? :noindex : :indexed }
+
+        wire = c.encode([
+          ["x-sensitive", ""],
+          %w[x-regular value]
+        ], &policy)
+
+        expect((wire.getbyte(0) & 0xf0)).to eq 0x00
+        expect(d.decode(wire)).to eq [["x-sensitive", ""], %w[x-regular value]]
+
+        expected_table = [%w[x-regular value]]
+        expect(c.instance_variable_get(:@cc).table).to eq expected_table
+        expect(d.instance_variable_get(:@cc).table).to eq expected_table
+      end
+
+      it "keeps a selected literal representation under the static-only global mode" do
+        settings = Settings.new(index: :static, huffman: :never)
+        c = Compressor.new(settings)
+        d = Decompressor.new(settings)
+
+        wire = c.encode([%w[authorization secret]], :neverindexed)
+
+        expect(wire.bytes).to eq [31, 8, 6, *"secret".bytes]
+        expect(d.decode(wire.dup).first).to be_never_indexed
+        expect(c.instance_variable_get(:@cc).table).to be_empty
+        expect(d.instance_variable_get(:@cc).table).to be_empty
+      end
+
+      it "preserves duplicate fields and empty never-indexed values across blocks" do
+        policy = proc { |field, _| field == "set-cookie" ? :neverindexed : :indexed }
+
+        first = c.encode([%w[set-cookie a=b], %w[set-cookie c=d]], &policy)
+        first_decoded = d.decode(first)
+        expect(first_decoded).to eq [["set-cookie", "a=b"], ["set-cookie", "c=d"]]
+        expect(first_decoded.map(&:never_indexed?)).to eq [true, true]
+
+        second = c.encode([["set-cookie", ""]], &policy)
+        second_decoded = d.decode(second)
+        expect(second_decoded).to eq [["set-cookie", ""]]
+        expect(second_decoded.first).to be_never_indexed
+
+        third = c.encode([%w[set-cookie a=b]], &policy)
+        expect(d.decode(third)).to eq [["set-cookie", "a=b"]]
+
+        expect(c.instance_variable_get(:@cc).table).to be_empty
+        expect(d.instance_variable_get(:@cc).table).to be_empty
+      end
+
+      it "calls the policy once per input field, including repeated encodes" do
+        calls = []
+        policy = proc do |field, value|
+          calls << [field, value]
+          field == "authorization" ? :neverindexed : :indexed
+        end
+
+        headers = [%w[authorization secret], %w[content-type text/plain]]
+        2.times { c.encode(headers, &policy) }
+
+        expect(calls).to eq headers * 2
+      end
+
+      it "supports single-argument policy callbacks" do
+        policy = proc { |(field, _)| field == "authorization" ? :neverindexed : :indexed }
+
+        wire = c.encode([%w[authorization secret]], &policy)
+
+        expect((wire.getbyte(0) & 0xf0)).to eq 0x10
+        expect(d.decode(wire).first).to be_never_indexed
+      end
+
+      it "accepts a policy keyword as well as a block" do
+        policy = proc { |_, value| value == "secret" ? :neverindexed : :indexed }
+
+        wire = c.encode([%w[authorization secret]], index: policy)
+
+        expect((wire.getbyte(0) & 0xf0)).to eq 0x10
+        expect(d.decode(wire.dup).first).to be_never_indexed
+      end
+
+      it "does not retroactively remove an ordinary entry when a field becomes sensitive" do
+        policy = proc { |_, value| value == "new-secret" ? :neverindexed : :indexed }
+
+        ordinary_wire = c.encode([%w[authorization old-secret]], &policy)
+        d.decode(ordinary_wire.dup)
+        wire = c.encode([%w[authorization new-secret]], &policy)
+        decoded = d.decode(wire.dup)
+
+        expect((wire.getbyte(0) & 0xf0)).to eq 0x10
+        expect(decoded.first).to be_never_indexed
+        expect(decoded.first.last).to eq "new-secret"
+
+        old_entry = ["authorization", "old-secret"]
+        expect(c.instance_variable_get(:@cc).table.first).to eq old_entry
+        expect(d.instance_variable_get(:@cc).table.first).to eq old_entry
+      end
+
+      it "keeps never-indexed semantics through a table size update in the same block" do
+        policy = proc { |field, _| field == "set-cookie" ? :neverindexed : :indexed }
+        wire = c.header({ type: :changetablesize, name: 0, value: 64 }, "".b)
+        wire.concat(c.encode([
+          ["set-cookie", ""],
+          %w[x v]
+        ], &policy))
+        decoded = d.decode(wire.dup)
+        expect(decoded.first).to eq ["set-cookie", ""]
+        expect(decoded.first).to be_never_indexed
+        expect(d.instance_variable_get(:@cc).table).to eq [%w[x v]]
+      end
+
+      it "raises for an unknown policy" do
+        expect { c.encode([%w[authorization secret]]) { :sensitive } }
+          .to raise_error(ArgumentError, /invalid indexing policy/)
+      end
     end
   end
 

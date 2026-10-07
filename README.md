@@ -284,6 +284,32 @@ The client can cancel any given push stream (via `.close`), or disable server pu
 ```ruby
 client.settings(settings_enable_push: 0)
 ```
+
+### HPACK indexing policy
+
+Ordinary header fields can use the dynamic HPACK table, while credential-like
+fields can be encoded differently on a per-field basis. Pass a policy
+callback as the `index:` option (or as a block) to `Compressor#encode`; it is
+called once per field in that encoded header block and returns one of:
+
+* `:indexed` - use normal indexed or incremental-indexing compression.
+* `:noindex` - encode a literal field without adding it to the table.
+* `:neverindexed` (also accepted as `:never_indexed`) - encode a literal
+  never-indexed field. A matching existing entry cannot turn this into an
+  indexed representation, though the field name may still reference an
+  existing static or dynamic table entry when permitted by the compressor's
+  global indexing mode.
+
+`Decompressor#decode` returns array-compatible `HeaderField` objects. They
+compare as the normal `[name, value]` pair and expose `never_indexed?` so
+that applications can retain the never-indexed semantics.
+
+Changing a field's policy only affects future representations. A value that
+was previously indexed as an ordinary field remains in both peers' dynamic
+tables until normal HPACK eviction, a dynamic table size update, or a new
+compression context removes it; marking later occurrences never-indexed does
+not retroactively erase that historical entry.
+
 ### Specs
 
 To run specs:

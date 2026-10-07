@@ -108,11 +108,15 @@ module HTTP2
         buffer
       end
 
-      # Encodes provided list of HTTP headers.
-      def encode(headers)
+      # Encodes provided list of HTTP headers. The optional per-field policy
+      # receives each field and value and returns :indexed, :noindex, or
+      # :neverindexed.
+      def encode(headers, indexing_policy = nil, index: indexing_policy, &indexing_policy_block)
+        indexing_policy = index unless index.nil?
+        indexing_policy ||= indexing_policy_block
         buffer = "".b
         headers.partition { |f, _| f.start_with? ":" }.each do |hs|
-          @cc.encode(hs) do |cmd|
+          @cc.encode(hs, indexing_policy: indexing_policy) do |cmd|
             header(cmd, buffer)
           end
         end
